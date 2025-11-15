@@ -2,7 +2,7 @@
 
 A lightweight, cross-platform terminal text editor written in pure Python.
 
-!(public/banner.png)
+![Alt text](public/banner.png)
 
 ## How to run
 ```bash
@@ -54,4 +54,4 @@ python run.py [filename]
 
 ---
 
-**Vuno v0.0.2 - Happy Editing! **
+**Vuno v0.0.2 - Happy Editing!**
