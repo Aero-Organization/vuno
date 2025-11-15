@@ -21,13 +21,13 @@ class Editor:
         self.buffer = Buffer(filename)
         self.config = Config()
         self.message = ""
-        self.show_stats = False
+        self.message_timeout = 0
         
         # Create the text area
         self.text_area = TextArea(
             text=self.buffer.get_text(),
             multiline=True,
-            scrollbar=True,
+            scrollbar=self.config.show_scrollbar,
             line_numbers=self.config.show_line_numbers,
             wrap_lines=self.config.wrap_lines,
         )
@@ -86,6 +86,11 @@ class Editor:
         def save_file(event):
             """Save file (Ctrl+O)."""
             self._handle_save()
+
+        @kb.add('c-s')
+        def save_as(event):
+            """Save as (Ctrl+S)."""
+            self._handle_save_as()
         
         # Search
         @kb.add('c-w')
@@ -118,6 +123,11 @@ class Editor:
         def paste_text(event):
             """Paste (Ctrl+U)."""
             self._handle_paste()
+
+        @kb.add('c-c')
+        def copy_line(event):
+            """Copy line (Ctrl_C)."""
+            self._handle_copy()
         
         # Navigation
         @kb.add('c-t')
@@ -131,15 +141,15 @@ class Editor:
             """Toggle line numbers (Ctrl+L)."""
             self._toggle_line_numbers()
         
-        # Help
+        # Help and info
         @kb.add('c-g')
         def show_help(event):
             """Show help (Ctrl+G)."""
             self._show_help()
         
-        @kb.add('c-s')
+        @kb.add('c-i')
         def show_statistics(event):
-            """Show statistics (Ctrl+S)."""
+            """Show statistics (Ctrl+I)."""
             self._show_statistics()
         
         return kb
@@ -159,8 +169,16 @@ class Editor:
         
         # Get stats
         stats = self.buffer.get_stats()
+
+        status_parts = [
+            f"{filename}{modified}",
+            f"Ln {line}/{stats['lines']}",
+            f"Col {col}",
+            f"{stats['chars']} chars",
+            f"{stats['words']} words"
+        ]
         
-        return f" {filename}{modified} | Ln {line}/{stats['lines']}, Col {col} | {stats['chars']} chars"
+        return " | ".join(status_parts)
     
     def _get_message_text(self):
         """Get message bar text."""
@@ -168,7 +186,7 @@ class Editor:
     
     def _get_help_text(self):
         """Get help bar text."""
-        return " ^X Exit ^O Save ^W Search ^G Help ^L LineNum ^K Cut ^U Paste | Vuno v0.0.2a"
+        return " ^X Exit | ^O Save | ^W Search | ^K Cut | ^U Paste | ^G Help | Vuno v0.0.2b"
     
     def _sync_from_textarea(self):
         """Sync buffer from text area."""
@@ -186,9 +204,8 @@ class Editor:
         lines_before = text_before.split('\n')
         self.buffer.cursor_x = len(lines_before[-1]) if lines_before else 0
         
-        # Mark as modified if changed
-        if text != old_text:
-            self.buffer.modified = True
+        # Check if modified
+        self.buffer.check_modified()
     
     def _sync_to_textarea(self):
         """Sync text area from buffer."""
@@ -213,24 +230,30 @@ class Editor:
         self._sync_from_textarea()
         
         if not self.buffer.filename:
-            self._prompt_for_filename()
+            self._prompt_for_filename(save_and_continue=False)
         else:
             self._do_save()
+
+    def _handle_save_as(self):
+        """Handle save as command."""
+        self._sync_from_textarea()
+        self._prompt_for_filename(save_and_continue=False, save_as=True)
     
     def _do_save(self):
         """Actually save the file."""
         try:
             self.buffer.save_file()
             stats = self.buffer.get_stats()
-            self.message = f"[ Wrote {stats['lines']} line(s), {stats['chars']} chars ]"
+            self.message = f"[ Saved: {stats['lines']} lines, {stats['chars']} chars, {stats['words']} words ]"
         except Exception as e:
-            self.message = f"Error: {e}"
+            self.message = f"Error saving: {e}"
     
     def _handle_undo(self):
         """Handle undo command."""
         if self.buffer.undo():
             self._sync_to_textarea()
-            self.message = "Undo successful"
+            undo_count = len(self.buffer.undo_stack)
+            self.message = f"Undo successful ({undo_count} more available)"
         else:
             self.message = "Nothing to undo"
     
@@ -238,7 +261,8 @@ class Editor:
         """Handle redo command."""
         if self.buffer.redo():
             self._sync_to_textarea()
-            self.message = "Redo successful"
+            redo_count = len(self.buffer.redo_stack)
+            self.message = f"Redo successful ({redo_count} more available)"
         else:
             self.message = "Nothing to redo"
     
@@ -247,16 +271,27 @@ class Editor:
         self._sync_from_textarea()
         if self.buffer.cut_line():
             self._sync_to_textarea()
-            self.message = "Line cut to clipboard"
+            clip_size = len(self.buffer.clipboard)
+            self.message = f"Line cut to clipboard ({clip_size} lines total)"
         else:
             self.message = "Nothing to cut"
-    
+
+    def _handle_copy(self):
+        """Handle copy line command."""
+        self._sync_from_textarea()
+        if self.buffer.copy_line():
+            clip_size = len(self.buffer.clipboard)
+            self.message = f"Line copied to clipboard ({clip_size} lines total)"
+        else:
+            self.message = "Nothing to copy"
+
     def _handle_paste(self):
         """Handle paste command."""
         self._sync_from_textarea()
         if self.buffer.paste():
             self._sync_to_textarea()
-            self.message = "Pasted from clipboard"
+            clip_size = len(self.buffer.clipboard)
+            self.message = f"Pasted {clip_size} line(s) from clipboard"
         else:
             self.message = "Clipboard is empty"
     
@@ -271,20 +306,22 @@ class Editor:
         """Toggle line numbers."""
         self.config.toggle_line_numbers()
         self.text_area.line_numbers = self.config.show_line_numbers
-        status = "on" if self.config.show_line_numbers else "off"
+        status = "ON" if self.config.show_line_numbers else "OFF"
         self.message = f"Line numbers: {status}"
     
     def _show_statistics(self):
         """Show buffer statistics."""
         stats = self.buffer.get_stats()
-        self.message = f"Lines: {stats['lines']} | Chars: {stats['chars']} | Undo: {len(self.buffer.undo_stack)}"
+        undo_info = f"Undo: {len(self.buffer.undo_stack)}/{self.config.max_undo_levels}"
+        self.message = f"Lines: {stats['lines']} | Chars: {stats['chars']} | Words: {stats['words']} | {undo_info}"
     
     def _handle_goto_line(self):
         """Handle go to line command."""
         self._sync_from_textarea()
         
+        stats = self.buffer.get_stats()
         input_area = TextArea(
-            prompt="Go to line: ",
+            prompt=f"Go to line (1-{stats['lines']}): ",
             multiline=False,
         )
         
@@ -296,11 +333,11 @@ class Editor:
                 line_num = int(input_area.text.strip())
                 if self.buffer.goto_line(line_num):
                     self._sync_to_textarea()
-                    self.message = f"Jumped to line {line_num}"
+                    self.message = f"Jumped to line {line_num}/{stats['lines']}"
                 else:
-                    self.message = f"Invalid line number: {line_num}"
+                    self.message = f"Invalid line: {line_num} (valid: 1-{stats['lines']})"
             except ValueError:
-                self.message = "Invalid number"
+                self.message = "Please enter a valid number"
             self._restore_main_layout()
         
         @input_kb.add('c-c')
@@ -311,11 +348,15 @@ class Editor:
         
         self._show_input_dialog(input_area, input_kb)
     
-    def _prompt_for_filename(self):
+    def _prompt_for_filename(self, save_and_continue=False, save_as=False):
         """Prompt user for filename."""
+        current_name = self.buffer.filename if not save_as else ""
+        prompt_text = "Save As: " if save_as else "File Name to Write: "
+
         input_area = TextArea(
-            prompt="File Name to Write: ",
+            prompt=prompt_text,
             multiline=False,
+            text=current_name or "",
         )
         
         input_kb = KeyBindings()
@@ -326,14 +367,16 @@ class Editor:
             if filename:
                 self.buffer.filename = filename
                 self._do_save()
+                if not save_and_continue:
+                    self._restore_main_layout()
             else:
-                self.message = "Cancelled"
-            self._restore_main_layout()
+                self.message = "Save cancelled - no filename provided"
+                self._restore_main_layout()
         
         @input_kb.add('c-c')
         @input_kb.add('c-g')
         def cancel(event):
-            self.message = "Cancelled"
+            self.message = "Save cancelled"
             self._restore_main_layout()
         
         self._show_input_dialog(input_area, input_kb)
@@ -358,13 +401,13 @@ class Editor:
                 self.message = result or "Not found"
                 self._sync_to_textarea()
             else:
-                self.message = "Cancelled"
+                self.message = "Search cancelled"
             self._restore_main_layout()
         
         @input_kb.add('c-c')
         @input_kb.add('c-g')
         def cancel(event):
-            self.message = "Cancelled"
+            self.message = "Search cancelled"
             self._restore_main_layout()
         
         self._show_input_dialog(input_area, input_kb)
@@ -380,8 +423,9 @@ class Editor:
     
     def _prompt_save_on_exit(self):
         """Prompt to save on exit."""
+        filename_info = f" '{self.buffer.filename}'" if self.buffer.filename else ""
         input_area = TextArea(
-            prompt="Save modified buffer? (y/n): ",
+            prompt=f"Save modified buffer{filter}? (y/n): ",
             multiline=False,
         )
         
@@ -400,13 +444,13 @@ class Editor:
             elif response.startswith('n'):
                 self.app.exit()
             else:
-                self.message = "Cancelled"
+                self.message = "Exit cancelled (enter 'y' or 'n')"
                 self._restore_main_layout()
         
         @input_kb.add('c-c')
         @input_kb.add('c-g')
         def cancel(event):
-            self.message = "Cancelled"
+            self.message = "Exit cancelled"
             self._restore_main_layout()
         
         self._show_input_dialog(input_area, input_kb)
@@ -414,7 +458,7 @@ class Editor:
     def _prompt_for_filename_and_exit(self):
         """Prompt for filename then exit."""
         input_area = TextArea(
-            prompt="File Name to Write: ",
+            prompt="Save as (filename): ",
             multiline=False,
         )
         
@@ -428,13 +472,13 @@ class Editor:
                 self._do_save()
                 self.app.exit()
             else:
-                self.message = "Cancelled"
+                self.message = "Exit cancelled - no filename provided"
                 self._restore_main_layout()
         
         @input_kb.add('c-c')
         @input_kb.add('c-g')
         def cancel(event):
-            self.message = "Cancelled"
+            self.message = "Exit cancelled"
             self._restore_main_layout()
         
         self._show_input_dialog(input_area, input_kb)
@@ -469,14 +513,15 @@ class Editor:
         self.app.layout.focus(self.text_area)
     
     def _show_help(self):
-        """Show help message."""
-        help_text = [
-            "Vuno v0.0.2a - Keyboard Shortcuts:",
-            "^X=Exit ^O=Save ^W=Search ^N=Next",
-            "^Z=Undo ^Y=Redo ^K=Cut ^U=Paste",
-            "^T=GoToLine ^L=LineNum ^S=Stats ^G=Help"
+        """Show detailed help message."""
+        help_lines = [
+            "FILE: ^X=Exit ^O=Save ^S=SaveAs",
+            "EDIT: ^Z=Undo ^Y=Redo ^K=Cut ^C=Copy ^U=Paste",
+            "SEARCH: ^W=Find ^N=Next",
+            "NAV: ^T=GoToLine ^L=LineNum",
+            "INFO: ^I=Stats ^G=Help"
         ]
-        self.message = " | ".join(help_text)
+        self.message = " | ".join(help_lines)
     
     def run(self):
         """Run the editor."""

@@ -2,6 +2,8 @@
 Text buffer management for the nano editor.
 """
 
+import re
+
 class Buffer:
     """Manages the text content and cursor position."""
     
@@ -11,6 +13,7 @@ class Buffer:
         self.cursor_x = 0
         self.cursor_y = 0
         self.modified = False
+        self.saved_content = ''  # Track last saved state
 
         # Undo/Redo stacks
         self.undo_stack = []
@@ -26,6 +29,7 @@ class Buffer:
         
         if filename:
             self.load_file(filename)
+            self.saved_content = self.get_text()
     
     def load_file(self, filename):
         """Load content from a file."""
@@ -37,10 +41,13 @@ class Buffer:
                     self.lines = ['']
             self.filename = filename
             self.modified = False
+            self.saved_content = self.get_text()
             return True
         except FileNotFoundError:
             self.lines = ['']
             self.filename = filename
+            self.modified = False
+            self.saved_content = ''
             return False
         except Exception as e:
             raise Exception(f"Error loading file: {e}")
@@ -55,8 +62,10 @@ class Buffer:
         
         try:
             with open(self.filename, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(self.lines))
+                content = '\n'.join(self.lines)
+                f.write(content)
             self.modified = False
+            self.saved_content = content
             return True
         except Exception as e:
             raise Exception(f"Error saving file: {e}")
@@ -150,6 +159,12 @@ class Buffer:
         """Get all text content."""
         return '\n'.join(self.lines)
     
+    def check_modified(self):
+        """Check if buffer has been modified since last save."""
+        current = self.get_text()
+        self.modified = (current != self.saved_content)
+        return self.modified
+    
     def search(self, query, from_current=True, next_match=False):
         """Search for text and move cursor to match."""
         if not query:
@@ -159,8 +174,8 @@ class Buffer:
         
         if next_match and self.last_search_pos:
             start_y, start_x = self.last_search_pos
-            # Move to next character
-            start_x += 1
+            # Move to next character after current match
+            start_x += len(query)
         elif from_current:
             start_y = self.cursor_y
             start_x = self.cursor_x + 1
@@ -168,7 +183,7 @@ class Buffer:
             start_y = 0
             start_x = 0
         
-        # Search from current position
+        # Search from current position to end
         for y in range(start_y, len(self.lines)):
             x = start_x if y == start_y else 0
             pos = self.lines[y].find(query, x)
@@ -177,20 +192,22 @@ class Buffer:
                 self.cursor_y = y
                 self.cursor_x = pos
                 self.last_search_pos = (y, pos)
-                return f"Found: {query}"
+                return f"Found: '{query}' at line {y + 1}"
         
         # Wrap search from beginning
         for y in range(0, start_y + 1):
-            end_x = start_x if y == start_y else len(self.lines[y])
-            pos = self.lines[y].find(query, 0, end_x)
+            if y < start_y:
+                pos = self.lines[y].find(query, 0)
+            else:
+                pos = self.lines[y].find(query, 0, start_x)
             
             if pos != -1:
                 self.cursor_y = y
                 self.cursor_x = pos
                 self.last_search_pos = (y, pos)
-                return f"Found: {query} (wrapped)"
+                return f"Found: '{query}' at line {y + 1} (wrapped)"
         
-        return f"Not found: {query}"
+        return f"Not found: '{query}'"
     
     def search_next(self):
         """Find next occurrence of last search."""
@@ -230,6 +247,7 @@ class Buffer:
         
         self.save_state()
 
+        # Insert clipboard lines after current line
         for i, line in enumerate(self.clipboard):
             self.lines.insert(self.cursor_y + i + 1, line)
 
@@ -273,6 +291,7 @@ class Buffer:
         self.cursor_x = state['cursor_x']
         self.cursor_y = state['cursor_y']
 
+        self.check_modified()
         return True
     
     def redo(self):
@@ -294,6 +313,7 @@ class Buffer:
         self.cursor_x = state['cursor_x']
         self.cursor_y = state['cursor_y']
 
+        self.check_modified()
         return True
     
     def goto_line(self, line_number):
@@ -308,12 +328,19 @@ class Buffer:
         """Get buffer statistics."""
         total_lines = len(self.lines)
         total_chars = sum(len(line) for line in self.lines)
+
+        # Count words
+        text = self.get_text()
+        words = re.findall(r'\b\w+\b', text)
+        total_words = len(words)
+
         current_line = self.cursor_y + 1
         current_col = self.cursor_x + 1
 
         return {
             'lines': total_lines,
             'chars': total_chars,
+            'words': total_words,
             'current_line': current_line,
             'current_col': current_col,
         }
